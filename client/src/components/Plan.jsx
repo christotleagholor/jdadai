@@ -1,29 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useUser, useClerk, useAuth } from '@clerk/clerk-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { 
-  Check, 
-  Crown, 
-  Star, 
-  Zap, 
-  Shield, 
-  Rocket,
-  CreditCard,
-  Wallet,
-  Loader2,
-  AlertCircle,
-  ArrowRight,
-  RefreshCw
+  Check, Crown, Star, Zap, Shield, Rocket,
+  CreditCard, Wallet, Loader2, AlertCircle, ArrowRight, RefreshCw
 } from 'lucide-react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
-import Navbar from '../components/Navbar'
 
 const API_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:5000';
 
 const Plan = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, isSignedIn } = useUser();
   const { openSignIn } = useClerk();
   const { getToken } = useAuth();
@@ -37,8 +27,11 @@ const Plan = () => {
   const [isLoadingSubscription, setIsLoadingSubscription] = useState(true);
   const [ratesError, setRatesError] = useState(false);
   const [isRefreshingRates, setIsRefreshingRates] = useState(false);
+  
+  const hasFetched = useRef(false);
+  const isOnPricingPage = location.pathname === '/pricing';
 
-  // Supported currencies with Flutterwave support
+  // Supported currencies
   const currencies = [
     { code: 'USD', symbol: '$', name: 'US Dollar', rate: 1 },
     { code: 'GBP', symbol: '£', name: 'British Pound', rate: 0.79 },
@@ -51,52 +44,33 @@ const Plan = () => {
     { code: 'AUD', symbol: 'A$', name: 'Australian Dollar', rate: 1.52 }
   ];
 
-  // Fetch exchange rates and plans
+  // Fetch exchange rates and plans - NO ERROR TOAST
   useEffect(() => {
+    if (!isOnPricingPage) return;
+    if (hasFetched.current) return;
+    hasFetched.current = true;
+    
     const fetchData = async () => {
       try {
         setRatesError(false);
         
-        // Fetch exchange rates
-        const ratesRes = await axios.get(`${API_URL}/api/subscription/exchange-rates`);
-        setExchangeRates(ratesRes.data);
+        const [ratesRes, plansRes] = await Promise.all([
+          axios.get(`${API_URL}/api/subscription/exchange-rates`),
+          axios.get(`${API_URL}/api/subscription/plans`)
+        ]);
         
-        // Fetch plans
-        const plansRes = await axios.get(`${API_URL}/api/subscription/plans`);
+        setExchangeRates(ratesRes.data);
         setPlans(plansRes.data);
         
       } catch (error) {
         console.error('Error fetching data:', error);
         setRatesError(true);
-        toast.error('Failed to load pricing data. Using default rates.');
-        
-        // Set default rates as fallback
-        setExchangeRates({
-          rates: {
-            USD: 1,
-            GBP: 0.79,
-            EUR: 0.93,
-            NGN: 1500,
-            GHS: 15.5,
-            KES: 130,
-            ZAR: 18.5,
-            CAD: 1.35,
-            AUD: 1.52
-          },
-          supportedCurrencies: currencies,
-          lastUpdated: new Date()
-        });
+        // ✅ NO TOAST ERROR HERE - removed
       }
     };
     
     fetchData();
-    
-    if (isSignedIn) {
-      fetchCurrentSubscription();
-    } else {
-      setIsLoadingSubscription(false);
-    }
-  }, [isSignedIn]);
+  }, [isOnPricingPage]);
 
   const refreshRates = async () => {
     setIsRefreshingRates(true);
@@ -107,7 +81,7 @@ const Plan = () => {
       toast.success('Exchange rates updated!');
     } catch (error) {
       console.error('Error refreshing rates:', error);
-      toast.error('Failed to refresh rates');
+      // ✅ Silent fail - no error toast
     } finally {
       setIsRefreshingRates(false);
     }
@@ -122,13 +96,21 @@ const Plan = () => {
       setCurrentSubscription(response.data.subscription);
     } catch (error) {
       console.error('Error fetching subscription:', error);
+      // ✅ Silent fail - no error toast
     } finally {
       setIsLoadingSubscription(false);
     }
   };
 
+  useEffect(() => {
+    if (!isSignedIn || !isOnPricingPage) {
+      setIsLoadingSubscription(false);
+      return;
+    }
+    fetchCurrentSubscription();
+  }, [isSignedIn, isOnPricingPage]);
+
   const getConvertedPrice = (priceInUSD) => {
-    // Use default rate if exchangeRates not available
     const currency = currencies.find(c => c.code === selectedCurrency);
     const rate = currency?.rate || 1;
     return (priceInUSD * rate).toFixed(2);
@@ -157,22 +139,16 @@ const Plan = () => {
     
     try {
       const token = await getToken();
-      
-      // Get user's phone number if available
       const phoneNumber = user?.phoneNumbers?.[0]?.phoneNumber || '';
-      
-      const requestData = {
-        plan: selectedPlan,
-        currency: selectedCurrency,
-        returnUrl: `${window.location.origin}/pricing`,
-        phone: phoneNumber
-      };
-      
-      console.log('Sending payment request:', requestData);
       
       const response = await axios.post(
         `${API_URL}/api/subscription/initialize-payment`,
-        requestData,
+        {
+          plan: selectedPlan,
+          currency: selectedCurrency,
+          returnUrl: `${window.location.origin}/pricing`,
+          phone: phoneNumber
+        },
         {
           headers: { 
             Authorization: `Bearer ${token}`,
@@ -181,12 +157,9 @@ const Plan = () => {
         }
       );
 
-      console.log('Payment response:', response.data);
-
       if (response.data.success) {
         const { paymentLink, transactionReference, subscriptionId } = response.data.data;
         
-        // Store transaction reference for callback
         sessionStorage.setItem('pendingSubscription', JSON.stringify({
           txRef: transactionReference,
           subscriptionId,
@@ -194,19 +167,16 @@ const Plan = () => {
           currency: selectedCurrency
         }));
         
-        // Open Flutterwave payment in new tab or redirect
         window.location.href = paymentLink;
       } else {
+        // ✅ Only show error on explicit failure
         toast.error(response.data.message || 'Failed to initialize payment');
       }
     } catch (error) {
       console.error('Payment initialization error:', error);
-      console.error('Error response:', error.response?.data);
-      
-      if (error.response?.data?.message === 'Payment configuration error. Please contact support.') {
-        toast.error('Payment service is temporarily unavailable. Please try again later.');
-      } else {
-        toast.error(error.response?.data?.message || 'Failed to initialize payment');
+      // ✅ Only show error on explicit failure
+      if (error.response?.data?.message !== 'Payment configuration error. Please contact support.') {
+        toast.error('Payment initialization failed. Please try again.');
       }
     } finally {
       setIsLoading(false);
@@ -260,8 +230,12 @@ const Plan = () => {
   const currentPrice = isBillingYearly ? currentPlan.priceYearly : currentPlan.price;
   const convertedPrice = getConvertedPrice(currentPrice);
   const currencySymbol = getCurrencySymbol();
-
   const hasActivePro = currentSubscription?.plan === 'pro' && currentSubscription?.status === 'active';
+
+  // Return null if not on pricing page
+  if (!isOnPricingPage) {
+    return null;
+  }
 
   if (isLoadingSubscription) {
     return (
@@ -275,11 +249,7 @@ const Plan = () => {
   }
 
   return (
-    <>
-    <Navbar />
-   
     <div className="relative min-h-screen py-20 px-4 overflow-hidden bg-gradient-to-b from-gray-50 via-white to-gray-50">
-      
       {/* Background Decor */}
       <div className="absolute inset-0 overflow-hidden">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-100 rounded-full filter blur-3xl opacity-30"></div>
@@ -288,7 +258,6 @@ const Plan = () => {
       </div>
 
       <div className="relative z-10 max-w-6xl mx-auto">
-        
         {/* Header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -309,14 +278,13 @@ const Plan = () => {
           </p>
         </motion.div>
 
-        {/* Billing Toggle & Currency Selector */}
+        {/* Currency Selector and Billing Toggle */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
           className="flex flex-col sm:flex-row items-center justify-center gap-6 mb-12"
         >
-          {/* Billing Toggle - Only show for Pro */}
           {selectedPlan === 'pro' && (
             <div className="flex items-center gap-3 bg-white rounded-full p-1 shadow-md border border-gray-100">
               <button
@@ -343,7 +311,6 @@ const Plan = () => {
             </div>
           )}
 
-          {/* Currency Selector - Always visible */}
           <div className="flex items-center gap-2 bg-white rounded-full p-1 shadow-md border border-gray-100">
             <Wallet className="w-4 h-4 text-gray-500 ml-3" />
             <select
@@ -370,46 +337,17 @@ const Plan = () => {
           </div>
         </motion.div>
 
-        {/* Exchange Rate Info */}
+        {/* Only show this subtle indicator if there's an error - no toast */}
         {ratesError && (
           <div className="mb-6 text-center">
             <p className="text-xs text-amber-600 bg-amber-50 inline-block px-3 py-1 rounded-full">
-              Using default exchange rates. Click refresh to update.
+              Using default exchange rates
             </p>
           </div>
         )}
 
-        {/* Current Subscription Status */}
-        {isSignedIn && currentSubscription && currentSubscription.plan !== 'free' && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-8 bg-gradient-to-r from-purple-50 to-pink-50 rounded-2xl p-4 border border-purple-200"
-          >
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div className="flex items-center gap-3">
-                <Crown className="w-6 h-6 text-purple-600" />
-                <div>
-                  <p className="font-semibold text-gray-800">Current Plan: {currentSubscription.plan.toUpperCase()}</p>
-                  <p className="text-sm text-gray-600">
-                    Active until {new Date(currentSubscription.endDate).toLocaleDateString()}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => navigate('/dashboard')}
-                className="text-purple-600 hover:text-purple-700 font-medium flex items-center gap-1"
-              >
-                Go to Dashboard
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </motion.div>
-        )}
-
         {/* Pricing Cards */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 max-w-4xl mx-auto">
-          
           {/* Free Plan Card */}
           <motion.div
             initial={{ opacity: 0, x: -30 }}
@@ -480,7 +418,6 @@ const Plan = () => {
               </div>
             )}
             
-            {/* Popular Badge */}
             <div className="absolute top-4 right-4 bg-gradient-to-r from-amber-400 to-orange-400 text-white px-3 py-1 rounded-full text-xs font-semibold">
               Most Popular
             </div>
@@ -520,7 +457,7 @@ const Plan = () => {
                 ) : hasActivePro ? (
                   'Current Plan'
                 ) : (
-                  `Pay ${currencySymbol}${convertedPrice} with Flutterwave`
+                  `Pay ${currencySymbol}${convertedPrice}`
                 )}
               </button>
               
@@ -559,8 +496,8 @@ const Plan = () => {
           </div>
           
           <p className="text-xs text-gray-400 mt-8">
-            You'll be redirected to Flutterwave's secure payment page. We accept cards, bank transfers, and mobile money.
-            <br />All prices are in {selectedCurrency}. For annual plans, you'll be charged once per year.
+            You'll be redirected to Flutterwave's secure payment page.
+            <br />All prices are in {selectedCurrency}.
           </p>
         </motion.div>
       </div>
@@ -568,7 +505,6 @@ const Plan = () => {
       {/* Payment Callback Handler */}
       <PaymentCallback />
     </div>
-     </>
   );
 };
 
@@ -580,7 +516,6 @@ const PaymentCallback = () => {
   const { user } = useUser();
   
   useEffect(() => {
-    // Check URL parameters for payment callback
     const urlParams = new URLSearchParams(window.location.search);
     const status = urlParams.get('status');
     const txRef = urlParams.get('tx_ref');
@@ -590,8 +525,8 @@ const PaymentCallback = () => {
       verifyPayment(txRef, transactionId);
     } else if (status === 'cancelled') {
       toast.error('Payment was cancelled');
-      // Clean up URL
-      window.history.replaceState({}, document.title, window.location.pathname);
+      window.history.replaceState({}, document.title, '/pricing');
+      navigate('/pricing', { replace: true });
     }
   }, []);
   
@@ -610,19 +545,18 @@ const PaymentCallback = () => {
       if (response.data.success) {
         toast.success('Subscription activated successfully! 🎉');
         sessionStorage.removeItem('pendingSubscription');
-        navigate('/dashboard');
+        navigate('/dashboard', { replace: true });
       } else {
-        toast.error(response.data.message || 'Payment verification failed. Please contact support.');
-        navigate('/pricing');
+        toast.error('Payment verification failed. Please contact support.');
+        navigate('/pricing', { replace: true });
       }
     } catch (error) {
       console.error('Verification error:', error);
-      toast.error(error.response?.data?.message || 'Error verifying payment');
-      navigate('/pricing');
+      toast.error('Error verifying payment');
+      navigate('/pricing', { replace: true });
     } finally {
       setIsVerifying(false);
-      // Clean up URL parameters
-      window.history.replaceState({}, document.title, window.location.pathname);
+      window.history.replaceState({}, document.title, '/pricing');
     }
   };
   
