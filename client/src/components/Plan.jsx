@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useUser, useClerk } from '@clerk/clerk-react';
+import { useUser, useClerk, useAuth } from '@clerk/clerk-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Check, 
@@ -12,15 +12,21 @@ import {
   CreditCard,
   Wallet,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  ArrowRight,
+  RefreshCw
 } from 'lucide-react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import Navbar from '../components/Navbar'
+
+const API_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:5000';
 
 const Plan = () => {
   const navigate = useNavigate();
   const { user, isSignedIn } = useUser();
   const { openSignIn } = useClerk();
+  const { getToken } = useAuth();
   const [selectedPlan, setSelectedPlan] = useState('pro');
   const [selectedCurrency, setSelectedCurrency] = useState('USD');
   const [isLoading, setIsLoading] = useState(false);
@@ -29,36 +35,57 @@ const Plan = () => {
   const [currentSubscription, setCurrentSubscription] = useState(null);
   const [isBillingYearly, setIsBillingYearly] = useState(false);
   const [isLoadingSubscription, setIsLoadingSubscription] = useState(true);
+  const [ratesError, setRatesError] = useState(false);
+  const [isRefreshingRates, setIsRefreshingRates] = useState(false);
 
-  const API_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:5000';
-
-  // Supported currencies
+  // Supported currencies with Flutterwave support
   const currencies = [
-    { code: 'USD', symbol: '$', name: 'US Dollar' },
-    { code: 'GBP', symbol: '£', name: 'British Pound' },
-    { code: 'EUR', symbol: '€', name: 'Euro' },
-    { code: 'NGN', symbol: '₦', name: 'Nigerian Naira' },
-    { code: 'GHS', symbol: '₵', name: 'Ghanaian Cedi' },
-    { code: 'KES', symbol: 'KSh', name: 'Kenyan Shilling' },
-    { code: 'ZAR', symbol: 'R', name: 'South African Rand' },
-    { code: 'CAD', symbol: 'C$', name: 'Canadian Dollar' },
-    { code: 'AUD', symbol: 'A$', name: 'Australian Dollar' }
+    { code: 'USD', symbol: '$', name: 'US Dollar', rate: 1 },
+    { code: 'GBP', symbol: '£', name: 'British Pound', rate: 0.79 },
+    { code: 'EUR', symbol: '€', name: 'Euro', rate: 0.93 },
+    { code: 'NGN', symbol: '₦', name: 'Nigerian Naira', rate: 1500 },
+    { code: 'GHS', symbol: '₵', name: 'Ghanaian Cedi', rate: 15.5 },
+    { code: 'KES', symbol: 'KSh', name: 'Kenyan Shilling', rate: 130 },
+    { code: 'ZAR', symbol: 'R', name: 'South African Rand', rate: 18.5 },
+    { code: 'CAD', symbol: 'C$', name: 'Canadian Dollar', rate: 1.35 },
+    { code: 'AUD', symbol: 'A$', name: 'Australian Dollar', rate: 1.52 }
   ];
 
   // Fetch exchange rates and plans
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [ratesRes, plansRes] = await Promise.all([
-          axios.get(`${API_URL}/api/subscription/exchange-rates`),
-          axios.get(`${API_URL}/api/subscription/plans`)
-        ]);
+        setRatesError(false);
         
+        // Fetch exchange rates
+        const ratesRes = await axios.get(`${API_URL}/api/subscription/exchange-rates`);
         setExchangeRates(ratesRes.data);
+        
+        // Fetch plans
+        const plansRes = await axios.get(`${API_URL}/api/subscription/plans`);
         setPlans(plansRes.data);
+        
       } catch (error) {
         console.error('Error fetching data:', error);
-        toast.error('Failed to load pricing data');
+        setRatesError(true);
+        toast.error('Failed to load pricing data. Using default rates.');
+        
+        // Set default rates as fallback
+        setExchangeRates({
+          rates: {
+            USD: 1,
+            GBP: 0.79,
+            EUR: 0.93,
+            NGN: 1500,
+            GHS: 15.5,
+            KES: 130,
+            ZAR: 18.5,
+            CAD: 1.35,
+            AUD: 1.52
+          },
+          supportedCurrencies: currencies,
+          lastUpdated: new Date()
+        });
       }
     };
     
@@ -66,12 +93,29 @@ const Plan = () => {
     
     if (isSignedIn) {
       fetchCurrentSubscription();
+    } else {
+      setIsLoadingSubscription(false);
     }
   }, [isSignedIn]);
 
+  const refreshRates = async () => {
+    setIsRefreshingRates(true);
+    try {
+      const ratesRes = await axios.get(`${API_URL}/api/subscription/exchange-rates`);
+      setExchangeRates(ratesRes.data);
+      setRatesError(false);
+      toast.success('Exchange rates updated!');
+    } catch (error) {
+      console.error('Error refreshing rates:', error);
+      toast.error('Failed to refresh rates');
+    } finally {
+      setIsRefreshingRates(false);
+    }
+  };
+
   const fetchCurrentSubscription = async () => {
     try {
-      const token = await user?.getToken();
+      const token = await getToken();
       const response = await axios.get(`${API_URL}/api/subscription/my-subscription`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -84,8 +128,9 @@ const Plan = () => {
   };
 
   const getConvertedPrice = (priceInUSD) => {
-    if (!exchangeRates?.rates) return priceInUSD;
-    const rate = exchangeRates.rates[selectedCurrency] || 1;
+    // Use default rate if exchangeRates not available
+    const currency = currencies.find(c => c.code === selectedCurrency);
+    const rate = currency?.rate || 1;
     return (priceInUSD * rate).toFixed(2);
   };
 
@@ -94,7 +139,15 @@ const Plan = () => {
     return currency?.symbol || '$';
   };
 
-  const handleSubscribe = async () => {
+  const handleFreePlanClick = () => {
+    if (isSignedIn) {
+      navigate('/ai');
+    } else {
+      openSignIn();
+    }
+  };
+
+  const handleFlutterwavePayment = async () => {
     if (!isSignedIn) {
       openSignIn();
       return;
@@ -103,26 +156,58 @@ const Plan = () => {
     setIsLoading(true);
     
     try {
-      const token = await user.getToken();
+      const token = await getToken();
+      
+      // Get user's phone number if available
+      const phoneNumber = user?.phoneNumbers?.[0]?.phoneNumber || '';
+      
+      const requestData = {
+        plan: selectedPlan,
+        currency: selectedCurrency,
+        returnUrl: `${window.location.origin}/pricing`,
+        phone: phoneNumber
+      };
+      
+      console.log('Sending payment request:', requestData);
+      
       const response = await axios.post(
         `${API_URL}/api/subscription/initialize-payment`,
+        requestData,
         {
-          plan: selectedPlan,
-          currency: selectedCurrency,
-          returnUrl: `${window.location.origin}/payment-callback`
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` }
+          headers: { 
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
         }
       );
 
+      console.log('Payment response:', response.data);
+
       if (response.data.success) {
-        // Redirect to Flutterwave payment page
-        window.location.href = response.data.data.paymentLink;
+        const { paymentLink, transactionReference, subscriptionId } = response.data.data;
+        
+        // Store transaction reference for callback
+        sessionStorage.setItem('pendingSubscription', JSON.stringify({
+          txRef: transactionReference,
+          subscriptionId,
+          plan: selectedPlan,
+          currency: selectedCurrency
+        }));
+        
+        // Open Flutterwave payment in new tab or redirect
+        window.location.href = paymentLink;
+      } else {
+        toast.error(response.data.message || 'Failed to initialize payment');
       }
     } catch (error) {
-      console.error('Subscription error:', error);
-      toast.error(error.response?.data?.message || 'Failed to initialize payment');
+      console.error('Payment initialization error:', error);
+      console.error('Error response:', error.response?.data);
+      
+      if (error.response?.data?.message === 'Payment configuration error. Please contact support.') {
+        toast.error('Payment service is temporarily unavailable. Please try again later.');
+      } else {
+        toast.error(error.response?.data?.message || 'Failed to initialize payment');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -176,7 +261,23 @@ const Plan = () => {
   const convertedPrice = getConvertedPrice(currentPrice);
   const currencySymbol = getCurrencySymbol();
 
+  const hasActivePro = currentSubscription?.plan === 'pro' && currentSubscription?.status === 'active';
+
+  if (isLoadingSubscription) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 animate-spin text-purple-600 mx-auto mb-4" />
+          <p className="text-gray-500">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
+    <>
+    <Navbar />
+   
     <div className="relative min-h-screen py-20 px-4 overflow-hidden bg-gradient-to-b from-gray-50 via-white to-gray-50">
       
       {/* Background Decor */}
@@ -215,38 +316,40 @@ const Plan = () => {
           transition={{ delay: 0.1 }}
           className="flex flex-col sm:flex-row items-center justify-center gap-6 mb-12"
         >
-          {/* Billing Toggle */}
-          <div className="flex items-center gap-3 bg-white rounded-full p-1 shadow-md border border-gray-100">
-            <button
-              onClick={() => setIsBillingYearly(false)}
-              className={`px-6 py-2 rounded-full transition-all duration-300 ${
-                !isBillingYearly
-                  ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md'
-                  : 'text-gray-600 hover:text-gray-800'
-              }`}
-            >
-              Monthly
-            </button>
-            <button
-              onClick={() => setIsBillingYearly(true)}
-              className={`px-6 py-2 rounded-full transition-all duration-300 ${
-                isBillingYearly
-                  ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md'
-                  : 'text-gray-600 hover:text-gray-800'
-              }`}
-            >
-              Yearly
-              <span className="ml-2 text-xs bg-green-500 text-white px-2 py-0.5 rounded-full">Save 20%</span>
-            </button>
-          </div>
+          {/* Billing Toggle - Only show for Pro */}
+          {selectedPlan === 'pro' && (
+            <div className="flex items-center gap-3 bg-white rounded-full p-1 shadow-md border border-gray-100">
+              <button
+                onClick={() => setIsBillingYearly(false)}
+                className={`px-6 py-2 rounded-full transition-all duration-300 ${
+                  !isBillingYearly
+                    ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md'
+                    : 'text-gray-600 hover:text-gray-800'
+                }`}
+              >
+                Monthly
+              </button>
+              <button
+                onClick={() => setIsBillingYearly(true)}
+                className={`px-6 py-2 rounded-full transition-all duration-300 ${
+                  isBillingYearly
+                    ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-md'
+                    : 'text-gray-600 hover:text-gray-800'
+                }`}
+              >
+                Yearly
+                <span className="ml-2 text-xs bg-green-500 text-white px-2 py-0.5 rounded-full">Save 20%</span>
+              </button>
+            </div>
+          )}
 
-          {/* Currency Selector */}
+          {/* Currency Selector - Always visible */}
           <div className="flex items-center gap-2 bg-white rounded-full p-1 shadow-md border border-gray-100">
             <Wallet className="w-4 h-4 text-gray-500 ml-3" />
             <select
               value={selectedCurrency}
               onChange={(e) => setSelectedCurrency(e.target.value)}
-              className="bg-transparent py-2 pl-2 pr-8 rounded-full focus:outline-none text-gray-700"
+              className="bg-transparent py-2 pl-2 pr-8 rounded-full focus:outline-none text-gray-700 cursor-pointer"
             >
               {currencies.map(currency => (
                 <option key={currency.code} value={currency.code}>
@@ -254,8 +357,27 @@ const Plan = () => {
                 </option>
               ))}
             </select>
+            {ratesError && (
+              <button
+                onClick={refreshRates}
+                disabled={isRefreshingRates}
+                className="ml-1 p-1 text-gray-400 hover:text-purple-600 transition-colors"
+                title="Refresh exchange rates"
+              >
+                <RefreshCw className={`w-4 h-4 ${isRefreshingRates ? 'animate-spin' : ''}`} />
+              </button>
+            )}
           </div>
         </motion.div>
+
+        {/* Exchange Rate Info */}
+        {ratesError && (
+          <div className="mb-6 text-center">
+            <p className="text-xs text-amber-600 bg-amber-50 inline-block px-3 py-1 rounded-full">
+              Using default exchange rates. Click refresh to update.
+            </p>
+          </div>
+        )}
 
         {/* Current Subscription Status */}
         {isSignedIn && currentSubscription && currentSubscription.plan !== 'free' && (
@@ -276,9 +398,10 @@ const Plan = () => {
               </div>
               <button
                 onClick={() => navigate('/dashboard')}
-                className="text-purple-600 hover:text-purple-700 font-medium"
+                className="text-purple-600 hover:text-purple-700 font-medium flex items-center gap-1"
               >
-                Go to Dashboard →
+                Go to Dashboard
+                <ArrowRight className="w-4 h-4" />
               </button>
             </div>
           </motion.div>
@@ -292,7 +415,7 @@ const Plan = () => {
             initial={{ opacity: 0, x: -30 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.2 }}
-            className={`relative bg-white rounded-3xl shadow-xl border-2 transition-all duration-300 hover:shadow-2xl ${
+            className={`relative bg-white rounded-3xl shadow-xl border-2 transition-all duration-300 hover:shadow-2xl cursor-pointer ${
               selectedPlan === 'free' ? 'border-purple-500 scale-105' : 'border-gray-100 hover:scale-102'
             }`}
             onClick={() => setSelectedPlan('free')}
@@ -318,10 +441,10 @@ const Plan = () => {
               </div>
               
               <button
-                onClick={() => window.location.href = '/ai'}
+                onClick={handleFreePlanClick}
                 className="w-full py-3 rounded-xl font-semibold transition-all duration-300 bg-gray-100 text-gray-700 hover:bg-gray-200 mb-6"
               >
-                Get Started
+                {isSignedIn ? 'Go to Dashboard' : 'Get Started'}
               </button>
               
               <div className="space-y-3">
@@ -346,9 +469,10 @@ const Plan = () => {
             initial={{ opacity: 0, x: 30 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.3 }}
-            className={`relative bg-gradient-to-br from-white to-purple-50 rounded-3xl shadow-2xl border-2 transition-all duration-300 hover:shadow-3xl ${
+            className={`relative bg-gradient-to-br from-white to-purple-50 rounded-3xl shadow-2xl border-2 transition-all duration-300 hover:shadow-3xl cursor-pointer ${
               selectedPlan === 'pro' ? 'border-purple-600 scale-105' : 'border-purple-200 hover:scale-102'
             }`}
+            onClick={() => setSelectedPlan('pro')}
           >
             {selectedPlan === 'pro' && (
               <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-purple-600 to-pink-600 text-white px-6 py-1 rounded-full text-sm font-semibold shadow-lg">
@@ -385,18 +509,18 @@ const Plan = () => {
               </div>
               
               <button
-                onClick={handleSubscribe}
-                disabled={isLoading || (currentSubscription?.plan === 'pro' && currentSubscription?.status === 'active')}
+                onClick={handleFlutterwavePayment}
+                disabled={isLoading || hasActivePro}
                 className={`w-full py-3 rounded-xl font-semibold transition-all duration-300 bg-gradient-to-r from-purple-600 to-pink-600 text-white hover:shadow-lg hover:scale-105 active:scale-95 ${
-                  (isLoading || currentSubscription?.plan === 'pro') ? 'opacity-75 cursor-not-allowed' : ''
+                  (isLoading || hasActivePro) ? 'opacity-75 cursor-not-allowed' : ''
                 }`}
               >
                 {isLoading ? (
                   <Loader2 className="w-5 h-5 animate-spin mx-auto" />
-                ) : currentSubscription?.plan === 'pro' && currentSubscription?.status === 'active' ? (
+                ) : hasActivePro ? (
                   'Current Plan'
                 ) : (
-                  'Upgrade to Pro'
+                  `Pay ${currencySymbol}${convertedPrice} with Flutterwave`
                 )}
               </button>
               
@@ -435,24 +559,28 @@ const Plan = () => {
           </div>
           
           <p className="text-xs text-gray-400 mt-8">
-            All prices are in {selectedCurrency}. For annual plans, you'll be charged once per year.
-            Subscriptions auto-renew unless cancelled.
+            You'll be redirected to Flutterwave's secure payment page. We accept cards, bank transfers, and mobile money.
+            <br />All prices are in {selectedCurrency}. For annual plans, you'll be charged once per year.
           </p>
         </motion.div>
       </div>
 
-      {/* Payment Callback Handler Component */}
+      {/* Payment Callback Handler */}
       <PaymentCallback />
     </div>
+     </>
   );
 };
 
-// Payment Callback Component
+// Payment Callback Handler Component
 const PaymentCallback = () => {
   const navigate = useNavigate();
   const [isVerifying, setIsVerifying] = useState(false);
+  const { getToken } = useAuth();
+  const { user } = useUser();
   
   useEffect(() => {
+    // Check URL parameters for payment callback
     const urlParams = new URLSearchParams(window.location.search);
     const status = urlParams.get('status');
     const txRef = urlParams.get('tx_ref');
@@ -460,42 +588,53 @@ const PaymentCallback = () => {
     
     if (status === 'successful' && txRef && transactionId) {
       verifyPayment(txRef, transactionId);
+    } else if (status === 'cancelled') {
+      toast.error('Payment was cancelled');
+      // Clean up URL
+      window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
   
   const verifyPayment = async (txRef, transactionId) => {
     setIsVerifying(true);
-    const API_URL = import.meta.env.VITE_BASE_URL || 'http://localhost:5000';
     
     try {
+      const token = user ? await getToken() : null;
       const response = await axios.post(`${API_URL}/api/subscription/verify-payment`, {
         transactionReference: txRef,
         transactionId
+      }, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       
       if (response.data.success) {
-        toast.success('Subscription activated successfully!');
+        toast.success('Subscription activated successfully! 🎉');
+        sessionStorage.removeItem('pendingSubscription');
         navigate('/dashboard');
       } else {
-        toast.error('Payment verification failed. Please contact support.');
+        toast.error(response.data.message || 'Payment verification failed. Please contact support.');
         navigate('/pricing');
       }
     } catch (error) {
       console.error('Verification error:', error);
-      toast.error('Error verifying payment');
+      toast.error(error.response?.data?.message || 'Error verifying payment');
       navigate('/pricing');
     } finally {
       setIsVerifying(false);
+      // Clean up URL parameters
+      window.history.replaceState({}, document.title, window.location.pathname);
     }
   };
   
   if (isVerifying) {
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-2xl p-8 text-center">
-          <Loader2 className="w-12 h-12 animate-spin text-purple-600 mx-auto mb-4" />
-          <p className="text-gray-800 font-semibold">Verifying your payment...</p>
-          <p className="text-gray-500 text-sm mt-2">Please wait while we activate your subscription</p>
+        <div className="bg-white rounded-2xl p-8 text-center max-w-md mx-4">
+          <Loader2 className="w-16 h-16 animate-spin text-purple-600 mx-auto mb-4" />
+          <h3 className="text-xl font-semibold text-gray-800 mb-2">Verifying Payment</h3>
+          <p className="text-gray-500 text-sm">
+            Please wait while we confirm your payment and activate your subscription...
+          </p>
         </div>
       </div>
     );

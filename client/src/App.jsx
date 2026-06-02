@@ -12,6 +12,8 @@ import Dashboard from './pages/Dashboard'
 import Community from './pages/Community'
 import BlogTitles from './pages/BlogTitles'
 import {Toaster} from 'react-hot-toast'
+import Plan from './components/Plan';
+
 
 const App = () => {
 
@@ -30,7 +32,10 @@ const App = () => {
           <Route path='/ai/remove-object' element={<RemoveObject/>}/>
           <Route path='/ai/review-resume' element={<ReviewResume/>}/>
           <Route path='/ai/community' element={<Community/>}/>
+          
         </Route>
+
+        <Route path="/pricing" element={<Plan />} />
 
         <Route path='*' element={<NotFoundPage/>}/>
 

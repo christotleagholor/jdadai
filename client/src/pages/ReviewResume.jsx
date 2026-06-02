@@ -1,14 +1,17 @@
-import { FileText, Sparkles, Upload, Download, CheckCircle, XCircle, AlertCircle, TrendingUp, Award, Clock, FileCheck, Briefcase, GraduationCap, Star, Zap } from 'lucide-react';
-import React, { useState, useRef } from 'react'
+import { FileText, Sparkles, Upload, Download, CheckCircle, XCircle, AlertCircle, TrendingUp, Award, Clock, FileCheck, Briefcase, GraduationCap, Star, Zap, Crown } from 'lucide-react';
+import React, { useState, useRef, useContext } from 'react'
 import axios from 'axios';
-import { useAuth } from '@clerk/clerk-react';
+import { useAuth, useUser } from '@clerk/clerk-react';
 import toast from 'react-hot-toast';
 import Markdown from 'react-markdown';
+import { PremiumLimitContext } from '../limitContext/LimitContext';
 
 axios.defaults.baseURL = import.meta.env.VITE_BASE_URL;
 
 const ReviewResume = () => {
 
+  const { limit, setPremiumLimit, isPremium, loading: contextLoading, checkFeatureAccess } = useContext(PremiumLimitContext);
+  
   const [input, setInput] = useState(null)
   const [fileName, setFileName] = useState('')
   const [loading, setLoading] = useState(false);
@@ -18,6 +21,16 @@ const ReviewResume = () => {
   const fileInputRef = useRef(null);
 
   const { getToken } = useAuth();
+  const { user } = useUser();
+
+  // Check feature access
+  const featureAccess = checkFeatureAccess?.('resume-review') || { 
+    hasAccess: isPremium, 
+    remaining: isPremium ? Infinity : (3 - limit) 
+  };
+  const hasAccess = featureAccess.hasAccess;
+  const creditsLeft = featureAccess.remaining;
+  const isCreditsRemaining = hasAccess && creditsLeft > 0;
 
   const handleDrag = (e) => {
     e.preventDefault();
@@ -68,7 +81,6 @@ const ReviewResume = () => {
   };
 
   const extractScore = (reviewContent) => {
-    // Try to extract a score from the review (e.g., "Score: 85/100" or "85%")
     const scoreMatch = reviewContent.match(/(\d+)(?:\/100|\%)/);
     if (scoreMatch) {
       return parseInt(scoreMatch[1]);
@@ -81,6 +93,16 @@ const ReviewResume = () => {
     
     if (!input) {
       toast.error('Please upload your resume');
+      return;
+    }
+    
+    // Check if user has access
+    if (!hasAccess) {
+      if (!isPremium) {
+        toast.error('Resume review is a premium feature. Upgrade to Pro to get your resume analyzed.');
+      } else {
+        toast.error('You have reached your monthly limit. Upgrade or wait for next month.');
+      }
       return;
     }
     
@@ -101,14 +123,20 @@ const ReviewResume = () => {
         const extractedScore = extractScore(data.content);
         setScore(extractedScore);
         toast.success('Resume analyzed successfully!');
+        
+        // Only increment usage for non-premium users
+        if (!isPremium && setPremiumLimit) {
+          await setPremiumLimit();
+        }
       } else {
         toast.error(data.message)
       }
     } catch (error) {
-      toast.error(error.message)
+      console.error('Review error:', error);
+      toast.error(error.response?.data?.message || error.message || 'Failed to analyze resume')
     }
     setLoading(false);
-  }
+  };
 
   const getScoreColor = (score) => {
     if (score >= 80) return 'text-green-600';
@@ -116,11 +144,23 @@ const ReviewResume = () => {
     return 'text-red-600';
   };
 
-  const getScoreRingColor = (score) => {
-    if (score >= 80) return 'stroke-green-500';
-    if (score >= 60) return 'stroke-yellow-500';
-    return 'stroke-red-500';
+  const getScoreMessage = (score) => {
+    if (score >= 80) return 'Excellent! Your resume is well-optimized for ATS systems.';
+    if (score >= 60) return 'Good progress! Your resume has potential but needs some improvements.';
+    return 'Needs improvement. Follow the recommendations below to enhance your resume.';
   };
+
+  // Show loading state while checking subscription
+  if (contextLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-500">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50">
@@ -139,6 +179,27 @@ const ReviewResume = () => {
           <p className="text-gray-500 text-lg max-w-2xl mx-auto">
             Get professional AI-powered feedback to improve your resume and land your dream job
           </p>
+          
+          {/* Plan Badge */}
+          <div className="flex justify-center mt-4">
+            <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium ${
+              isPremium 
+                ? 'bg-gradient-to-r from-purple-100 to-pink-100 text-purple-700' 
+                : 'bg-gray-100 text-gray-600'
+            }`}>
+              {isPremium ? (
+                <>
+                  <Crown className="w-3.5 h-3.5 text-yellow-500" />
+                  Pro Plan - Unlimited Resume Reviews
+                </>
+              ) : (
+                <>
+                  <Star className="w-3.5 h-3.5 text-gray-500" />
+                  Free Plan - {creditsLeft} review{creditsLeft !== 1 ? 's' : ''} remaining
+                </>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -162,15 +223,17 @@ const ReviewResume = () => {
               {/* Upload Area */}
               {!input ? (
                 <div
-                  onClick={() => fileInputRef.current?.click()}
-                  onDragEnter={handleDrag}
-                  onDragLeave={handleDrag}
-                  onDragOver={handleDrag}
-                  onDrop={handleDrop}
-                  className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all ${
-                    dragActive 
-                      ? 'border-blue-500 bg-blue-50' 
-                      : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
+                  onClick={() => !isPremium || creditsLeft > 0 ? fileInputRef.current?.click() : null}
+                  onDragEnter={!isPremium || creditsLeft > 0 ? handleDrag : null}
+                  onDragLeave={!isPremium || creditsLeft > 0 ? handleDrag : null}
+                  onDragOver={!isPremium || creditsLeft > 0 ? handleDrag : null}
+                  onDrop={!isPremium || creditsLeft > 0 ? handleDrop : null}
+                  className={`border-2 border-dashed rounded-2xl p-10 text-center transition-all ${
+                    (!isPremium && !isCreditsRemaining)
+                      ? 'border-gray-200 bg-gray-50 cursor-not-allowed opacity-60'
+                      : dragActive 
+                        ? 'border-blue-500 bg-blue-50 cursor-pointer' 
+                        : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50 cursor-pointer'
                   }`}
                 >
                   <div className="flex flex-col items-center gap-4">
@@ -178,15 +241,34 @@ const ReviewResume = () => {
                       <Upload className="w-8 h-8 text-blue-500" />
                     </div>
                     <div>
-                      <p className="text-gray-700 font-medium">Drag & drop your resume here</p>
-                      <p className="text-gray-400 text-sm mt-1">or click to browse</p>
+                      <p className="text-gray-700 font-medium">
+                        {(!isPremium && !isCreditsRemaining) 
+                          ? 'No reviews remaining' 
+                          : 'Drag & drop your resume here'}
+                      </p>
+                      <p className="text-gray-400 text-sm mt-1">
+                        {(!isPremium && !isCreditsRemaining) 
+                          ? 'Upgrade to Pro for unlimited reviews' 
+                          : 'or click to browse'}
+                      </p>
                     </div>
-                    <button
-                      type="button"
-                      className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors"
-                    >
-                      Select PDF
-                    </button>
+                    {(!isPremium && !isCreditsRemaining) ? (
+                      <button
+                        type="button"
+                        onClick={() => window.location.href = '/pricing'}
+                        className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-lg text-sm hover:shadow-lg transition-all"
+                      >
+                        Upgrade to Pro
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors"
+                      >
+                        Select PDF
+                      </button>
+                    )}
                   </div>
                   <input 
                     ref={fileInputRef}
@@ -217,9 +299,9 @@ const ReviewResume = () => {
                   </div>
 
                   <button 
-                    disabled={loading} 
+                    disabled={loading || (!isPremium && !isCreditsRemaining)} 
                     className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl font-semibold transition-all ${
-                      loading
+                      loading || (!isPremium && !isCreditsRemaining)
                         ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                         : 'bg-gradient-to-r from-blue-600 to-teal-600 text-white hover:shadow-lg hover:scale-[1.02] active:scale-[0.98]'
                     }`}
@@ -236,6 +318,40 @@ const ReviewResume = () => {
                       </>
                     )}
                   </button>
+                </div>
+              )}
+
+              {/* Premium Upgrade Notice for non-premium */}
+              {!isPremium && (
+                <div className="mt-6 p-4 bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl border border-purple-200">
+                  <div className="flex items-start gap-2">
+                    <Crown className="w-4 h-4 text-purple-500 mt-0.5 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-xs text-purple-700 font-medium">Premium Feature</p>
+                      <p className="text-xs text-purple-600 mt-0.5">
+                        Resume review is a premium feature. Upgrade to Pro for unlimited resume analyses!
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => window.location.href = '/pricing'}
+                      className="px-3 py-1 bg-purple-600 text-white text-xs rounded-lg hover:bg-purple-700 transition-colors"
+                    >
+                      Upgrade
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Credit Warning for non-premium with no credits */}
+              {!isPremium && !isCreditsRemaining && (
+                <div className="mt-4 p-4 bg-red-50 rounded-xl border border-red-100">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" />
+                    <p className="text-xs text-red-600">
+                      You've used all your free resume reviews. Upgrade to premium for unlimited reviews.
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -282,6 +398,11 @@ const ReviewResume = () => {
                   <p className="text-gray-400 text-sm max-w-sm">
                     Upload your resume (PDF format) and click "Review Resume" to get detailed feedback
                   </p>
+                  {!isPremium && (
+                    <p className="text-xs text-gray-400 mt-3">
+                      Free users have {3 - (limit || 0)} review{3 - (limit || 0) !== 1 ? 's' : ''} remaining
+                    </p>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-6">
@@ -305,9 +426,7 @@ const ReviewResume = () => {
                         ></div>
                       </div>
                       <p className="text-xs text-gray-500 mt-2">
-                        {score >= 80 ? 'Excellent! Your resume is well-optimized.' : 
-                         score >= 60 ? 'Good progress! Some improvements needed.' : 
-                         'Needs improvement. Follow the recommendations below.'}
+                        {getScoreMessage(score)}
                       </p>
                     </div>
                   )}
@@ -335,7 +454,16 @@ const ReviewResume = () => {
                   {/* Action Buttons */}
                   <div className="flex gap-3 pt-4 border-t border-gray-200">
                     <button
-                      onClick={() => window.print()}
+                      onClick={() => {
+                        const blob = new Blob([content], { type: 'text/markdown' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `resume-review-${Date.now()}.md`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        toast.success('Report saved!');
+                      }}
                       className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-medium transition-colors"
                     >
                       <Download className="w-4 h-4" />
